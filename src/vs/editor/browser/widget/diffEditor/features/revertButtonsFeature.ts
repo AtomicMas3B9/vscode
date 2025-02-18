@@ -3,21 +3,21 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { addDisposableListener, h, EventType } from 'vs/base/browser/dom';
-import { renderIcon } from 'vs/base/browser/ui/iconLabel/iconLabels';
-import { Codicon } from 'vs/base/common/codicons';
-import { Disposable, toDisposable } from 'vs/base/common/lifecycle';
-import { IObservable, autorunWithStore, derived } from 'vs/base/common/observable';
-import { IGlyphMarginWidget, IGlyphMarginWidgetPosition } from 'vs/editor/browser/editorBrowser';
-import { DiffEditorEditors } from 'vs/editor/browser/widget/diffEditor/components/diffEditorEditors';
-import { DiffEditorOptions } from 'vs/editor/browser/widget/diffEditor/diffEditorOptions';
-import { DiffEditorViewModel } from 'vs/editor/browser/widget/diffEditor/diffEditorViewModel';
-import { DiffEditorWidget } from 'vs/editor/browser/widget/diffEditor/diffEditorWidget';
-import { LineRange, LineRangeSet } from 'vs/editor/common/core/lineRange';
-import { Range } from 'vs/editor/common/core/range';
-import { RangeMapping } from 'vs/editor/common/diff/rangeMapping';
-import { GlyphMarginLane } from 'vs/editor/common/model';
-import { localize } from 'vs/nls';
+import { addDisposableListener, h, EventType } from '../../../../../base/browser/dom.js';
+import { renderIcon } from '../../../../../base/browser/ui/iconLabel/iconLabels.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
+import { Disposable, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { IObservable, autorunWithStore, derived } from '../../../../../base/common/observable.js';
+import { IGlyphMarginWidget, IGlyphMarginWidgetPosition } from '../../../editorBrowser.js';
+import { DiffEditorEditors } from '../components/diffEditorEditors.js';
+import { DiffEditorOptions } from '../diffEditorOptions.js';
+import { DiffEditorViewModel } from '../diffEditorViewModel.js';
+import { DiffEditorWidget } from '../diffEditorWidget.js';
+import { LineRange, LineRangeSet } from '../../../../common/core/lineRange.js';
+import { Range } from '../../../../common/core/range.js';
+import { LineRangeMapping, RangeMapping } from '../../../../common/diff/rangeMapping.js';
+import { GlyphMarginLane } from '../../../../common/model.js';
+import { localize } from '../../../../../nls.js';
 
 const emptyArr: never[] = [];
 
@@ -31,7 +31,7 @@ export class RevertButtonsFeature extends Disposable {
 		super();
 
 		this._register(autorunWithStore((reader, store) => {
-			if (!this._options.shouldRenderRevertArrows.read(reader)) { return; }
+			if (!this._options.shouldRenderOldRevertArrows.read(reader)) { return; }
 			const model = this._diffModel.read(reader);
 			const diff = model?.diff.read(reader);
 			if (!model || !diff) { return; }
@@ -62,7 +62,7 @@ export class RevertButtonsFeature extends Disposable {
 					const btn = store.add(new RevertButton(
 						m.lineRangeMapping.modified.startLineNumber,
 						this._widget,
-						m.lineRangeMapping.innerChanges,
+						m.lineRangeMapping,
 						false
 					));
 					this._editors.modified.addGlyphMarginWidget(btn);
@@ -122,7 +122,7 @@ export class RevertButton extends Disposable implements IGlyphMarginWidget {
 	constructor(
 		private readonly _lineNumber: number,
 		private readonly _widget: DiffEditorWidget,
-		private readonly _diffs: RangeMapping[],
+		private readonly _diffs: RangeMapping[] | LineRangeMapping,
 		private readonly _revertSelection: boolean,
 	) {
 		super();
@@ -142,7 +142,11 @@ export class RevertButton extends Disposable implements IGlyphMarginWidget {
 		}));
 
 		this._register(addDisposableListener(this._domNode, EventType.CLICK, (e) => {
-			this._widget.revertRangeMappings(this._diffs);
+			if (this._diffs instanceof LineRangeMapping) {
+				this._widget.revert(this._diffs);
+			} else {
+				this._widget.revertRangeMappings(this._diffs);
+			}
 			e.stopPropagation();
 			e.preventDefault();
 		}));

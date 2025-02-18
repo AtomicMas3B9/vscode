@@ -3,44 +3,46 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import 'vs/css!./media/releasenoteseditor';
-import { CancellationToken } from 'vs/base/common/cancellation';
-import { onUnexpectedError } from 'vs/base/common/errors';
-import { escapeMarkdownSyntaxTokens } from 'vs/base/common/htmlContent';
-import { KeybindingParser } from 'vs/base/common/keybindingParser';
-import { escape } from 'vs/base/common/strings';
-import { URI } from 'vs/base/common/uri';
-import { generateUuid } from 'vs/base/common/uuid';
-import { TokenizationRegistry } from 'vs/editor/common/languages';
-import { generateTokensCSSForColorMap } from 'vs/editor/common/languages/supports/tokenization';
-import { ILanguageService } from 'vs/editor/common/languages/language';
-import * as nls from 'vs/nls';
-import { IEnvironmentService } from 'vs/platform/environment/common/environment';
-import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
-import { IOpenerService } from 'vs/platform/opener/common/opener';
-import { IProductService } from 'vs/platform/product/common/productService';
-import { asTextOrError, IRequestService } from 'vs/platform/request/common/request';
-import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from 'vs/workbench/contrib/markdown/browser/markdownDocumentRenderer';
-import { WebviewInput } from 'vs/workbench/contrib/webviewPanel/browser/webviewEditorInput';
-import { IWebviewWorkbenchService } from 'vs/workbench/contrib/webviewPanel/browser/webviewWorkbenchService';
-import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
-import { ACTIVE_GROUP, IEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { IExtensionService } from 'vs/workbench/services/extensions/common/extensions';
-import { getTelemetryLevel, supportsTelemetry } from 'vs/platform/telemetry/common/telemetryUtils';
-import { IConfigurationChangeEvent, IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { TelemetryLevel } from 'vs/platform/telemetry/common/telemetry';
-import { DisposableStore } from 'vs/base/common/lifecycle';
-import { SimpleSettingRenderer } from 'vs/workbench/contrib/markdown/browser/markdownSettingRenderer';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { Schemas } from 'vs/base/common/network';
+import './media/releasenoteseditor.css';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
+import { escapeMarkdownSyntaxTokens } from '../../../../base/common/htmlContent.js';
+import { KeybindingParser } from '../../../../base/common/keybindingParser.js';
+import { escape } from '../../../../base/common/strings.js';
+import { URI } from '../../../../base/common/uri.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { TokenizationRegistry } from '../../../../editor/common/languages.js';
+import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
+import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import * as nls from '../../../../nls.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
+import { asTextOrError, IRequestService } from '../../../../platform/request/common/request.js';
+import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../markdown/browser/markdownDocumentRenderer.js';
+import { WebviewInput } from '../../webviewPanel/browser/webviewEditorInput.js';
+import { IWebviewWorkbenchService } from '../../webviewPanel/browser/webviewWorkbenchService.js';
+import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
+import { ACTIVE_GROUP, IEditorService } from '../../../services/editor/common/editorService.js';
+import { IExtensionService } from '../../../services/extensions/common/extensions.js';
+import { getTelemetryLevel, supportsTelemetry } from '../../../../platform/telemetry/common/telemetryUtils.js';
+import { IConfigurationChangeEvent, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { TelemetryLevel } from '../../../../platform/telemetry/common/telemetry.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { SimpleSettingRenderer } from '../../markdown/browser/markdownSettingRenderer.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
+import { dirname } from '../../../../base/common/resources.js';
+import { asWebviewUri } from '../../webview/common/webview.js';
 
 export class ReleaseNotesManager {
 	private readonly _simpleSettingRenderer: SimpleSettingRenderer;
 	private readonly _releaseNotesCache = new Map<string, Promise<string>>();
-	private scrollPosition: { x: number; y: number } | undefined;
 
 	private _currentReleaseNotes: WebviewInput | undefined = undefined;
-	private _lastText: string | undefined;
+	private _lastMeta: { text: string; base: URI } | undefined;
 	private readonly disposables = new DisposableStore();
 
 	public constructor(
@@ -52,6 +54,7 @@ export class ReleaseNotesManager {
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IEditorGroupsService private readonly _editorGroupService: IEditorGroupsService,
+		@ICodeEditorService private readonly _codeEditorService: ICodeEditorService,
 		@IWebviewWorkbenchService private readonly _webviewWorkbenchService: IWebviewWorkbenchService,
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@IProductService private readonly _productService: IProductService,
@@ -67,21 +70,30 @@ export class ReleaseNotesManager {
 	}
 
 	private async updateHtml() {
-		if (!this._currentReleaseNotes || !this._lastText) {
+		if (!this._currentReleaseNotes || !this._lastMeta) {
 			return;
 		}
-		const captureScroll = this.scrollPosition;
-		const html = await this.renderBody(this._lastText);
+		const html = await this.renderBody(this._lastMeta);
 		if (this._currentReleaseNotes) {
 			this._currentReleaseNotes.webview.setHtml(html);
-			this._currentReleaseNotes.webview.postMessage({ type: 'setScroll', value: { scrollPosition: captureScroll } });
 		}
 	}
 
-	public async show(version: string): Promise<boolean> {
-		const releaseNoteText = await this.loadReleaseNotes(version);
-		this._lastText = releaseNoteText;
-		const html = await this.renderBody(releaseNoteText);
+	private async getBase(useCurrentFile: boolean) {
+		if (useCurrentFile) {
+			const currentFileUri = this._codeEditorService.getActiveCodeEditor()?.getModel()?.uri;
+			if (currentFileUri) {
+				return dirname(currentFileUri);
+			}
+		}
+		return URI.parse('https://code.visualstudio.com/raw');
+	}
+
+	public async show(version: string, useCurrentFile: boolean): Promise<boolean> {
+		const releaseNoteText = await this.loadReleaseNotes(version, useCurrentFile);
+		const base = await this.getBase(useCurrentFile);
+		this._lastMeta = { text: releaseNoteText, base };
+		const html = await this.renderBody(this._lastMeta);
 		const title = nls.localize('releaseNotesInputName', "Release Notes: {0}", version);
 
 		const activeEditorPane = this._editorService.activeEditorPane;
@@ -96,10 +108,10 @@ export class ReleaseNotesManager {
 					options: {
 						tryRestoreScrollPosition: true,
 						enableFindWidget: true,
-						disableServiceWorker: true,
+						disableServiceWorker: useCurrentFile ? false : true,
 					},
 					contentOptions: {
-						localResourceRoots: [],
+						localResourceRoots: useCurrentFile ? [base] : [],
 						allowScripts: true
 					},
 					extension: undefined
@@ -114,8 +126,6 @@ export class ReleaseNotesManager {
 			disposables.add(this._currentReleaseNotes.webview.onMessage(e => {
 				if (e.message.type === 'showReleaseNotes') {
 					this._configurationService.updateValue('update.showReleaseNotes', e.message.value);
-				} else if (e.message.type === 'scroll') {
-					this.scrollPosition = e.message.value.scrollPosition;
 				} else if (e.message.type === 'clickSetting') {
 					const x = this._currentReleaseNotes?.webview.container.offsetLeft + e.message.value.x;
 					const y = this._currentReleaseNotes?.webview.container.offsetTop + e.message.value.y;
@@ -134,7 +144,7 @@ export class ReleaseNotesManager {
 		return true;
 	}
 
-	private async loadReleaseNotes(version: string): Promise<string> {
+	private async loadReleaseNotes(version: string, useCurrentFile: boolean): Promise<string> {
 		const match = /^(\d+\.\d+)\./.exec(version);
 		if (!match) {
 			throw new Error('not found');
@@ -196,18 +206,27 @@ export class ReleaseNotesManager {
 		const fetchReleaseNotes = async () => {
 			let text;
 			try {
-				text = await asTextOrError(await this._requestService.request({ url }, CancellationToken.None));
+				if (useCurrentFile) {
+					const file = this._codeEditorService.getActiveCodeEditor()?.getModel()?.getValue();
+					text = file ? file.substring(file.indexOf('#')) : undefined;
+				} else {
+					text = await asTextOrError(await this._requestService.request({ url }, CancellationToken.None));
+				}
 			} catch {
 				throw new Error('Failed to fetch release notes');
 			}
 
-			if (!text || !/^#\s/.test(text)) { // release notes always starts with `#` followed by whitespace
+			if (!text || (!/^#\s/.test(text) && !useCurrentFile)) { // release notes always starts with `#` followed by whitespace, except when using the current file
 				throw new Error('Invalid release notes');
 			}
 
 			return patchKeybindings(text);
 		};
 
+		// Don't cache the current file
+		if (useCurrentFile) {
+			return fetchReleaseNotes();
+		}
 		if (!this._releaseNotesCache.has(version)) {
 			this._releaseNotesCache.set(version, (async () => {
 				try {
@@ -223,7 +242,7 @@ export class ReleaseNotesManager {
 	}
 
 	private async onDidClickLink(uri: URI) {
-		if (uri.scheme === Schemas.codeSetting || uri.scheme === Schemas.codeFeature) {
+		if (uri.scheme === Schemas.codeSetting) {
 			// handled in receive message
 		} else {
 			this.addGAParameters(uri, 'ReleaseNotes')
@@ -241,9 +260,18 @@ export class ReleaseNotesManager {
 		return uri;
 	}
 
-	private async renderBody(text: string) {
+	private async renderBody(fileContent: { text: string; base: URI }) {
 		const nonce = generateUuid();
-		const content = await renderMarkdownDocument(text, this._extensionService, this._languageService, false, undefined, undefined, this._simpleSettingRenderer);
+
+		const content = await renderMarkdownDocument(fileContent.text, this._extensionService, this._languageService, {
+			shouldSanitize: false,
+			markedExtensions: [{
+				renderer: {
+					html: this._simpleSettingRenderer.getHtmlRenderer(),
+					codespan: this._simpleSettingRenderer.getCodeSpanRenderer(),
+				}
+			}]
+		});
 		const colorMap = TokenizationRegistry.getColorMap();
 		const css = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
 		const showReleaseNotes = Boolean(this._configurationService.getValue<boolean>('update.showReleaseNotes'));
@@ -251,170 +279,91 @@ export class ReleaseNotesManager {
 		return `<!DOCTYPE html>
 		<html>
 			<head>
-				<base href="https://code.visualstudio.com/raw/">
+				<base href="${asWebviewUri(fileContent.base).toString(true)}/" >
 				<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
 				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https:; style-src 'nonce-${nonce}' https://code.visualstudio.com; script-src 'nonce-${nonce}';">
 				<style nonce="${nonce}">
 					${DEFAULT_MARKDOWN_STYLES}
 					${css}
 
+					/* codesetting */
+
+					code:has(.codesetting) {
+						background-color: var(--vscode-textPreformat-background);
+						color: var(--vscode-textPreformat-foreground);
+						padding-left: 1px;
+						margin-right: 3px;
+						padding-right: 0px;
+					}
+
+					code:has(.codesetting):focus {
+						border: 1px solid var(--vscode-button-border, transparent);
+					}
+
 					.codesetting {
-						color: var(--vscode-button-foreground);
-						background-color: var(--vscode-button-background);
-						width: fit-content;
+						color: var(--vscode-textPreformat-foreground);
 						padding: 0px 1px 1px 0px;
-						font-size: 12px;
+						font-size: 0px;
 						overflow: hidden;
 						text-overflow: ellipsis;
 						outline-offset: 2px !important;
 						box-sizing: border-box;
-						border-radius: 2px;
 						text-align: center;
 						cursor: pointer;
-						border: 1px solid var(--vscode-button-border, transparent);
-						line-height: 9px;
-						outline: 1px solid transparent;
-						display: inline-block;
-						margin-top: 3px;
-						margin-bottom: -4px !important;
-					}
-					.codesetting:hover {
-						background-color: var(--vscode-button-hoverBackground);
-						text-decoration: none !important;
-						color: var(--vscode-button-hoverForeground) !important;
-					}
-					.codesetting:focus {
-						outline: 0 !important;
-						text-decoration: none !important;
-						color: var(--vscode-button-hoverForeground) !important;
-						border: 1px solid var(--vscode-button-border, transparent);
+						display: inline;
+						margin-right: 3px;
 					}
 					.codesetting svg {
+						font-size: 12px;
+						text-align: center;
+						cursor: pointer;
+						border: 1px solid var(--vscode-button-secondaryBorder, transparent);
+						outline: 1px solid transparent;
+						line-height: 9px;
+						margin-bottom: -5px;
+						padding-left: 0px;
+						padding-top: 2px;
+						padding-bottom: 2px;
+						padding-right: 2px;
 						display: inline-block;
 						text-decoration: none;
 						text-rendering: auto;
-						text-align: center;
 						text-transform: none;
 						-webkit-font-smoothing: antialiased;
 						-moz-osx-font-smoothing: grayscale;
 						user-select: none;
 						-webkit-user-select: none;
 					}
-
-					.codefeature-container {
-						display: flex;
+					.codesetting .setting-name {
+						font-size: 13px;
+						padding-left: 2px;
+						padding-right: 3px;
+						padding-top: 1px;
+						padding-bottom: 1px;
+						margin-left: -5px;
+						margin-top: -3px;
 					}
-
-					.codefeature {
-						position: relative;
+					.codesetting:hover {
+						color: var(--vscode-textPreformat-foreground) !important;
+						text-decoration: none !important;
+					}
+					code:has(.codesetting):hover {
+						filter: brightness(140%);
+						text-decoration: none !important;
+					}
+					.codesetting:focus {
+						outline: 0 !important;
+						text-decoration: none !important;
+						color: var(--vscode-button-hoverForeground) !important;
+					}
+					.codesetting .separator {
+						width: 1px;
+						height: 14px;
+						margin-bottom: -3px;
 						display: inline-block;
-						width: 46px;
-						height: 24px;
-					}
-
-					.codefeature-container input {
-						display: none;
-					}
-
-					.toggle {
-						position: absolute;
-						cursor: pointer;
-						top: 0;
-						left: 0;
-						right: 0;
-						bottom: 0;
-						background-color: var(--vscode-button-background);
-						transition: .4s;
-						border-radius: 24px;
-					}
-
-					.toggle:before {
-						position: absolute;
-						content: "";
-						height: 16px;
-						width: 16px;
-						left: 4px;
-						bottom: 4px;
-						background-color: var(--vscode-editor-foreground);
-						transition: .4s;
-						border-radius: 50%;
-					}
-
-					input:checked+.codefeature > .toggle:before {
-						transform: translateX(22px);
-					}
-
-					.codefeature-container:has(input) .title {
-						line-height: 30px;
-						padding-left: 4px;
-						font-weight: bold;
-					}
-
-					.codefeature-container:has(input:checked) .title:after {
-						content: "${nls.localize('disableFeature', "Disable this feature")}";
-					}
-					.codefeature-container:has(input:not(:checked)) .title:after {
-						content: "${nls.localize('enableFeature', "Enable this feature")}";
-					}
-
-					.codefeature-container {
-						display: flex;
-					}
-
-					.codefeature {
-						position: relative;
-						display: inline-block;
-						width: 58px;
-						height: 30px;
-					}
-
-					.codefeature-container input {
-						display: none;
-					}
-
-					.toggle {
-						position: absolute;
-						cursor: pointer;
-						top: 0;
-						left: 0;
-						right: 0;
-						bottom: 0;
-						background-color: var(--vscode-disabledForeground);
-						transition: .4s;
-						border-radius: 30px;
-					}
-
-					.toggle:before {
-						position: absolute;
-						content: "";
-						height: 22px;
-						width: 22px;
-						left: 4px;
-						bottom: 4px;
-						background-color: var(--vscode-editor-foreground);
-						transition: .4s;
-						border-radius: 50%;
-					}
-
-					input:checked+.codefeature > .toggle:before {
-						transform: translateX(26px);
-					}
-
-					input:checked+.codefeature > .toggle {
-						background-color: var(--vscode-button-background);
-					}
-
-					.codefeature-container:has(input) .title {
-						line-height: 30px;
-						padding-left: 4px;
-						font-weight: bold;
-					}
-
-					.codefeature-container:has(input:checked) .title:after {
-						content: "${nls.localize('disableFeature', "Disable this feature")}";
-					}
-					.codefeature-container:has(input:not(:checked)) .title:after {
-						content: "${nls.localize('enableFeature', "Enable this feature")}";
+						background-color: var(--vscode-editor-background);
+						font-size: 12px;
+						margin-right: 8px;
 					}
 
 					header { display: flex; align-items: center; padding-top: 1em; }
@@ -449,39 +398,21 @@ export class ReleaseNotesManager {
 					window.addEventListener('message', event => {
 						if (event.data.type === 'showReleaseNotes') {
 							input.checked = event.data.value;
-						} else if (event.data.type === 'setScroll') {
-							window.scrollTo(event.data.value.scrollPosition.x, event.data.value.scrollPosition.y);
-						} else if (event.data.type === 'setFeaturedSettings') {
-							for (const [settingId, value] of event.data.value) {
-								const setting = document.getElementById(settingId);
-								if (setting instanceof HTMLInputElement) {
-									setting.checked = value;
-								}
-							}
 						}
 					});
 
-					window.onscroll = () => {
-						vscode.postMessage({
-							type: 'scroll',
-							value: {
-								scrollPosition: {
-									x: window.scrollX,
-									y: window.scrollY
-								}
-							}
-						});
-					};
-
 					window.addEventListener('click', event => {
-						const href = event.target.href ?? event.target.parentElement.href ?? event.target.parentElement.parentElement?.href;
-						if (href && (href.startsWith('${Schemas.codeSetting}') || href.startsWith('${Schemas.codeFeature}'))) {
+						const href = event.target.href ?? event.target.parentElement?.href ?? event.target.parentElement?.parentElement?.href;
+						if (href && (href.startsWith('${Schemas.codeSetting}'))) {
 							vscode.postMessage({ type: 'clickSetting', value: { uri: href, x: event.clientX, y: event.clientY }});
-							if (href.startsWith('${Schemas.codeFeature}')) {
-								const featureInput = event.target.parentElement.previousSibling;
-								if (featureInput instanceof HTMLInputElement) {
-									featureInput.checked = !featureInput.checked;
-								}
+						}
+					});
+
+					window.addEventListener('keypress', event => {
+						if (event.keyCode === 13) {
+							if (event.target.children.length > 0 && event.target.children[0].href) {
+								const clientRect = event.target.getBoundingClientRect();
+								vscode.postMessage({ type: 'clickSetting', value: { uri: event.target.children[0].href, x: clientRect.right , y: clientRect.bottom }});
 							}
 						}
 					});
@@ -503,7 +434,6 @@ export class ReleaseNotesManager {
 	private onDidChangeActiveWebviewEditor(input: WebviewInput | undefined): void {
 		if (input && input === this._currentReleaseNotes) {
 			this.updateCheckboxWebview();
-			this.updateFeaturedSettingsWebview();
 		}
 	}
 
@@ -515,14 +445,4 @@ export class ReleaseNotesManager {
 			});
 		}
 	}
-
-	private updateFeaturedSettingsWebview() {
-		if (this._currentReleaseNotes) {
-			this._currentReleaseNotes.webview.postMessage({
-				type: 'setFeaturedSettings',
-				value: this._simpleSettingRenderer.featuredSettingStates
-			});
-		}
-	}
 }
-
